@@ -1,0 +1,277 @@
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// -----------------------------------------------------------------------------
+// ENUMS (Section 2, 4, 6, 7, 8)
+// -----------------------------------------------------------------------------
+
+enum Role {
+  CUSTOMER
+  STAFF
+  MANAGER
+  ADMIN
+}
+
+enum Shift {
+  MORNING
+  EVENING
+  FULL_DAY
+}
+
+enum StaffStatus {
+  AVAILABLE
+  BUSY
+  BREAK
+  OFFLINE
+}
+
+enum CounterStatus {
+  AVAILABLE
+  BUSY
+  BREAK
+  CLOSED
+}
+
+enum AppointmentStatus {
+  BOOKED
+  CONFIRMED
+  CHECKED_IN
+  WAITING
+  IN_SERVICE
+  COMPLETED
+  CANCELLED
+  MISSED
+  RESCHEDULED
+  DELAYED
+}
+
+enum TokenStatus {
+  WAITING
+  CALLED
+  IN_SERVICE
+  COMPLETED
+  SKIPPED
+  MISSED
+  CANCELLED
+}
+
+// -----------------------------------------------------------------------------
+// SECTION 8 DATA MODELS
+// -----------------------------------------------------------------------------
+
+// 1. Department Entity
+model Department {
+  id           String        @id @default(uuid())
+  name         String        @unique
+  description  String?
+  workingHours String?       @default("09:00 - 17:00")
+  isActive     Boolean       @default(true)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  users        User[]
+  staffProfiles StaffProfile[]
+  services     Service[]
+  counters     Counter[]
+  appointments Appointment[]
+  tokens       Token[]
+
+  @@index([name])
+  @@index([isActive])
+}
+
+// 2. User Data (Section 8)
+// Fields: user_id, name, email, phone, role, account_status
+model User {
+  id           String        @id @default(uuid())
+  name         String
+  email        String        @unique
+  phone        String?
+  passwordHash String
+  role         Role          @default(CUSTOMER)
+  departmentId String?
+  department   Department?   @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  isActive     Boolean       @default(true) // account_status
+  lastLoginAt  DateTime?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  staffProfile StaffProfile?
+  refreshTokens RefreshToken[]
+  auditLogs    AuditLog[]    @relation("ActorAuditLogs")
+  appointments Appointment[]
+  tokens       Token[]
+  assignedCounters Counter[] @relation("AssignedStaffCounter")
+
+  @@index([email])
+  @@index([role])
+  @@index([departmentId])
+  @@index([isActive])
+}
+
+// 3. Service Data (Section 8)
+// Fields: service_id, service_name, department_id, average_duration, active_status
+model Service {
+  id              String        @id @default(uuid())
+  name            String        // service_name
+  code            String        // e.g., "DOC-VERIF", "CERT-ISSUE"
+  tokenPrefix     String        @default("A") // Prefix for tokens e.g. "A" for A-027
+  departmentId    String        // department_id
+  department      Department    @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  averageDuration Int           @default(15) // average_duration in minutes
+  description     String?
+  dailyLimit      Int?          // Maximum capacity per day
+  isActive        Boolean       @default(true) // active_status
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  appointments    Appointment[]
+  tokens          Token[]
+  counters        Counter[]
+
+  @@unique([departmentId, code])
+  @@index([departmentId])
+  @@index([isActive])
+}
+
+// 4. Counter Data (Section 8)
+// Fields: counter_id, department_id, assigned_staff, service_type, current_token, status
+model Counter {
+  id              String        @id @default(uuid())
+  counterNumber   String        // e.g. "Counter 1", "Counter 2"
+  departmentId    String        // department_id
+  department      Department    @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  assignedStaffId String?       // assigned_staff
+  assignedStaff   User?         @relation("AssignedStaffCounter", fields: [assignedStaffId], references: [id], onDelete: SetNull)
+  serviceId       String?       // service_type reference
+  service         Service?      @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  currentTokenId  String?       // current_token
+  status          CounterStatus @default(CLOSED)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  tokens          Token[]
+
+  @@index([departmentId])
+  @@index([assignedStaffId])
+  @@index([status])
+}
+
+// 5. Appointment Data (Section 8)
+// Fields: appointment_id, user_id, service_id, appointment_date, start_time, end_time, appointment_status, check_in_time
+model Appointment {
+  id                String            @id @default(uuid())
+  appointmentNumber String            @unique // e.g. "APT-20261001-001"
+  userId            String            // user_id
+  user              User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  serviceId         String            // service_id
+  service           Service           @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+  departmentId      String            // department_id
+  department        Department        @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  appointmentDate   DateTime          // appointment_date
+  startTime         String            // start_time (HH:mm format e.g. "09:30")
+  endTime           String            // end_time (HH:mm format e.g. "10:00")
+  status            AppointmentStatus @default(BOOKED) // appointment_status
+  checkInTime       DateTime?         // check_in_time
+  notes             String?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  token             Token?            // Linked queue token once checked in
+
+  @@index([userId])
+  @@index([serviceId])
+  @@index([departmentId])
+  @@index([appointmentDate])
+  @@index([status])
+}
+
+// 6. Token Data (Section 8)
+// Fields: token_id, token_number, user_id, service_id, queue_position, estimated_wait, token_status, created_at
+model Token {
+  id            String      @id @default(uuid())
+  tokenNumber   String      // token_number e.g. "A-027"
+  userId        String?     // user_id (nullable for walk-in/kiosk)
+  user          User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
+  serviceId     String      // service_id
+  service       Service     @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+  departmentId  String      // department_id
+  department    Department  @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  counterId     String?     // counter_id (when called)
+  counter       Counter?    @relation(fields: [counterId], references: [id], onDelete: SetNull)
+  appointmentId String?     @unique // appointment reference if booked
+  appointment   Appointment? @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+  queuePosition Int         @default(1) // queue_position
+  estimatedWait Int         @default(0) // estimated_wait (minutes)
+  status        TokenStatus @default(WAITING) // token_status
+  isPriority    Boolean     @default(false)
+  calledAt      DateTime?
+  completedAt   DateTime?
+  createdAt     DateTime    @default(now()) // created_at
+  updatedAt     DateTime    @updatedAt
+
+  @@index([departmentId, status])
+  @@index([serviceId])
+  @@index([counterId])
+  @@index([tokenNumber])
+  @@index([createdAt])
+}
+
+// 7. Staff Profile & Auxiliary Tables
+model StaffProfile {
+  id                String       @id @default(uuid())
+  userId            String       @unique
+  user              User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  staffCode         String       @unique
+  departmentId      String
+  department        Department   @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  assignedCounterId String?
+  serviceType       String?
+  shift             Shift        @default(FULL_DAY)
+  currentStatus     StaffStatus  @default(OFFLINE)
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  @@index([staffCode])
+  @@index([departmentId])
+  @@index([currentStatus])
+}
+
+model RefreshToken {
+  id         String    @id @default(uuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash  String
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+  userAgent  String?
+  ip         String?
+
+  @@index([tokenHash])
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  actorId    String?
+  actor      User?    @relation("ActorAuditLogs", fields: [actorId], references: [id], onDelete: SetNull)
+  action     String
+  targetType String
+  targetId   String?
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  @@index([action])
+  @@index([actorId])
+  @@index([targetId])
+  @@index([createdAt])
+}

@@ -1,0 +1,6 @@
+{
+  "name": "QueueCraft - Digital Queue & Appointment System",
+  "description": "Enterprise-grade digital queue and appointment management system with strict role-based access control (Customer, Staff, Manager, Admin).",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
